@@ -59,6 +59,7 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "Release: $RELEASE_TAG"
 
+      
       - name: Download MVPLab archives
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,10 +76,12 @@ jobs:
             --pattern "mvplab-frontend.tar" \
             --pattern "mvplab_evaluator_backend.tar"
 
+          echo "Downloaded images:"
           ls -lh images/
 
           test -s images/mvplab-frontend.tar
           test -s images/mvplab_evaluator_backend.tar
+
 
       - name: Login to GHCR
         uses: docker/login-action@v3
