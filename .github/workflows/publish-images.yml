@@ -17,6 +17,9 @@ concurrency:
 jobs:
   publish:
     name: Publish Frontend and Backend
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'chatbot-')
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
