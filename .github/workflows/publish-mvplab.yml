@@ -72,12 +72,12 @@ jobs:
           gh release download "$RELEASE_TAG" \
             --repo "$GH_REPO" \
             --dir images \
-            --pattern "mvplab_frontend.tar" \
+            --pattern "mvplab-frontend.tar" \
             --pattern "mvplab_evaluator_backend.tar"
 
           ls -lh images/
 
-          test -s images/mvplab_frontend.tar
+          test -s images/mvplab-frontend.tar
           test -s images/mvplab_evaluator_backend.tar
 
       - name: Login to GHCR
@@ -140,7 +140,7 @@ jobs:
           }
 
           publish_image \
-            images/mvplab_frontend.tar \
+            images/mvplab-frontend.tar \
             mvplab-frontend
 
           publish_image \
