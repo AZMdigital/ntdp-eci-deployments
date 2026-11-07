@@ -1,0 +1,178 @@
+
+name: Publish MVPLab Images to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "MVPLab release tag, e.g. mvplab-7nov2026"
+        required: true
+        type: string
+
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: mvplab-ghcr-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish MVPLab Images
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'mvplab-')
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            RELEASE_TAG="$EVENT_TAG"
+          else
+            RELEASE_TAG="$INPUT_TAG"
+          fi
+
+          if [[ ! "$RELEASE_TAG" =~ ^mvplab-[a-zA-Z0-9_.-]+$ ]]; then
+            echo "Invalid MVPLab release tag"
+            exit 1
+          fi
+
+          if [ "${#RELEASE_TAG}" -gt 128 ]; then
+            echo "Image tag exceeds Docker limit"
+            exit 1
+          fi
+
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Release: $RELEASE_TAG"
+
+      - name: Download MVPLab archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p images
+
+          gh release download "$RELEASE_TAG" \
+            --repo "$GH_REPO" \
+            --dir images \
+            --pattern "mvplab_frontend.tar" \
+            --pattern "mvplab_evaluator_backend.tar"
+
+          ls -lh images/
+
+          test -s images/mvplab_frontend.tar
+          test -s images/mvplab_evaluator_backend.tar
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load and push MVPLab images
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          publish_image() {
+            local archive="$1"
+            local image_name="$2"
+            local target="ghcr.io/$OWNER/$image_name:$RELEASE_TAG"
+            local output source platform
+
+            echo "Loading $archive"
+
+            output=$(docker load -i "$archive")
+            echo "$output"
+
+            mapfile -t sources < <(
+              printf '%s\n' "$output" | sed -n \
+                -e 's/^Loaded image: //p' \
+                -e 's/^Loaded image ID: //p' \
+                | sort -u
+            )
+
+            if [ "${#sources[@]}" -ne 1 ]; then
+              echo "Expected exactly one image"
+              exit 1
+            fi
+
+            source="${sources[0]}"
+
+            platform=$(docker image inspect "$source" \
+              --format '{{.Os}}/{{.Architecture}}')
+
+            echo "Platform: $platform"
+
+            if [ "$platform" != "linux/arm64" ]; then
+              echo "Expected linux/arm64, got $platform"
+              exit 1
+            fi
+
+            docker tag "$source" "$target"
+
+            echo "Pushing $target"
+            docker push "$target"
+
+            echo "Published $target"
+          }
+
+          publish_image \
+            images/mvplab_frontend.tar \
+            mvplab-frontend
+
+          publish_image \
+            images/mvplab_evaluator_backend.tar \
+            mvplab-evaluator-backend
+
+      - name: Verify GHCR images
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          docker manifest inspect \
+            "ghcr.io/$OWNER/mvplab-frontend:$RELEASE_TAG"
+
+          docker manifest inspect \
+            "ghcr.io/$OWNER/mvplab-evaluator-backend:$RELEASE_TAG"
+
+      - name: Publication summary
+        if: success()
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          {
+            echo "## MVPLab Images Published"
+            echo ""
+            echo "- ghcr.io/$OWNER/mvplab-frontend:$RELEASE_TAG"
+            echo "- ghcr.io/$OWNER/mvplab-evaluator-backend:$RELEASE_TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
