@@ -1,5 +1,5 @@
 
-      - name: Download release archives
+      - name: Download latest release archives
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -8,12 +8,16 @@
 
           echo "Repository: $GH_REPO"
 
-          echo "Available releases:"
-          gh release list --repo "$GH_REPO"
+          RELEASE_TAG=$(gh release view \
+            --repo "$GH_REPO" \
+            --json tagName \
+            --jq '.tagName')
+
+          echo "Latest release: $RELEASE_TAG"
 
           mkdir -p images
 
-          gh release download images-v1 \
+          gh release download "$RELEASE_TAG" \
             --repo "$GH_REPO" \
             --dir images \
             --pattern "*.tar"
