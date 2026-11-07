@@ -147,9 +147,9 @@ jobs:
 
             echo "Platform: $platform"
 
-            if [ "$platform" != "linux/amd64" ]; then
+            if [ "$platform" != "linux/arm64" ]; then
               echo "Unsupported platform: $platform"
-              echo "Expected linux/amd64"
+              echo "Expected linux/arm64"
               exit 1
             fi
 
