@@ -1,21 +1,75 @@
 
-      - name: Download latest release archives
+name: Publish NTDP Images to GHCR
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ntdp-ghcr-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Frontend and Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ------------------------------------
+      # 1. Determine release version
+      # ------------------------------------
+      - name: Resolve release tag
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
 
-          echo "Repository: $GH_REPO"
+          if [ -n "$EVENT_TAG" ]; then
+            RELEASE_TAG="$EVENT_TAG"
+          else
+            RELEASE_TAG=$(gh release view \
+              --repo "$GH_REPO" \
+              --json tagName \
+              --jq '.tagName')
+          fi
 
-          RELEASE_TAG=$(gh release view \
-            --repo "$GH_REPO" \
-            --json tagName \
-            --jq '.tagName')
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "No published release found"
+            exit 1
+          fi
 
-          echo "Latest release: $RELEASE_TAG"
+          # Validate Docker-compatible image tag
+          if [[ ! "$RELEASE_TAG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker tag: $RELEASE_TAG"
+            exit 1
+          fi
+
+          echo "Release: $RELEASE_TAG"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------
+      # 2. Download images
+      # ------------------------------------
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
 
           mkdir -p images
+
+          echo "Downloading release: $RELEASE_TAG"
 
           gh release download "$RELEASE_TAG" \
             --repo "$GH_REPO" \
@@ -25,5 +79,128 @@
           echo "Downloaded files:"
           ls -lh images/
 
-          test -f images/chatbot-frontend.tar
-          test -f images/ntdp_chatbot_backend.tar
+          if [ ! -f images/chatbot-frontend.tar ]; then
+            echo "Missing frontend TAR"
+            exit 1
+          fi
+
+          if [ ! -f images/ntdp_chatbot_backend.tar ]; then
+            echo "Missing backend TAR"
+            exit 1
+          fi
+
+      # ------------------------------------
+      # 3. Login to GHCR
+      # ------------------------------------
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------
+      # 4. Load, tag and publish images
+      # ------------------------------------
+      - name: Publish images to GHCR
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          publish_image() {
+            local archive="$1"
+            local image_name="$2"
+            local target="ghcr.io/$OWNER/$image_name:$RELEASE_TAG"
+            local output source count
+
+            echo "Loading $archive"
+
+            output=$(docker load -i "$archive")
+            echo "$output"
+
+            # Resolve loaded image reference or ID
+            mapfile -t sources < <(
+              printf '%s\n' "$output" | sed -n \
+                -e 's/^Loaded image: //p' \
+                -e 's/^Loaded image ID: //p' \
+                | sort -u
+            )
+
+            count=${#sources[@]}
+
+            if [ "$count" -ne 1 ]; then
+              echo "Expected one image, found $count"
+              exit 1
+            fi
+
+            source="${sources[0]}"
+
+            echo "Source: $source"
+
+            # Ensure ECI-compatible architecture
+            platform=$(docker image inspect "$source" \
+              --format '{{.Os}}/{{.Architecture}}')
+
+            echo "Platform: $platform"
+
+            if [ "$platform" != "linux/amd64" ]; then
+              echo "Unsupported platform: $platform"
+              echo "Expected linux/amd64"
+              exit 1
+            fi
+
+            docker tag "$source" "$target"
+
+            echo "Pushing $target"
+            docker push "$target"
+
+            echo "Published $target"
+          }
+
+          publish_image \
+            images/chatbot-frontend.tar \
+            ntdp-chatbot-frontend
+
+          publish_image \
+            images/ntdp_chatbot_backend.tar \
+            ntdp-chatbot-backend
+
+      # ------------------------------------
+      # 5. Verify published images
+      # ------------------------------------
+      - name: Verify GHCR images
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          docker manifest inspect \
+            "ghcr.io/$OWNER/ntdp-chatbot-frontend:$RELEASE_TAG"
+
+          docker manifest inspect \
+            "ghcr.io/$OWNER/ntdp-chatbot-backend:$RELEASE_TAG"
+
+          echo "Both images published successfully"
+
+      # ------------------------------------
+      # 6. Summary
+      # ------------------------------------
+      - name: Deployment summary
+        if: success()
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          echo "## Published Images" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ghcr.io/$OWNER/ntdp-chatbot-frontend:$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ghcr.io/$OWNER/ntdp-chatbot-backend:$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
