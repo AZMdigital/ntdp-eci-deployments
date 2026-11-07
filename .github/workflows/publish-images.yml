@@ -1,0 +1,95 @@
+
+name: Publish NTDP Images to GHCR
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish Frontend and Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p images
+
+          gh release download images-v1 \
+            --repo "$GH_REPO" \
+            --dir images \
+            --pattern "*.tar"
+
+          ls -lh images/
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load, tag and push images
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          publish_image() {
+            local archive="$1"
+            local image_name="$2"
+            local target="ghcr.io/$OWNER/$image_name:v1"
+
+            echo "Loading: $archive"
+
+            local before after image_id
+
+            before=$(docker image ls -q | sort -u)
+
+            docker load -i "$archive"
+
+            after=$(docker image ls -q | sort -u)
+
+            image_id=$(comm -13 \
+              <(echo "$before") \
+              <(echo "$after") | head -n 1)
+
+            if [ -z "$image_id" ]; then
+              echo "Cannot uniquely identify image from archive."
+              exit 1
+            fi
+
+            docker tag "$image_id" "$target"
+            docker push "$target"
+
+            echo "Published: $target"
+          }
+
+          publish_image \
+            "images/chatbot-frontend.tar" \
+            "ntdp-chatbot-frontend"
+
+          publish_image \
+            "images/ntdp_chatbot_backend.tar" \
+            "ntdp-chatbot-backend"
+
+      - name: Verify published images
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+          docker manifest inspect \
+            "ghcr.io/$OWNER/ntdp-chatbot-frontend:v1"
+
+          docker manifest inspect \
+            "ghcr.io/$OWNER/ntdp-chatbot-backend:v1"
