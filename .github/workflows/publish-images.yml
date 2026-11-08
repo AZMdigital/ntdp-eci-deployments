@@ -164,9 +164,9 @@ jobs:
             echo "Published $target"
           }
 
-          # publish_image \
-          #   images/chatbot-frontend.tar \
-          #   ntdp-chatbot-frontend
+          publish_image \
+            images/chatbot-frontend.tar \
+            ntdp-chatbot-frontend
 
           publish_image \
             images/ntdp_chatbot_backend.tar \
